@@ -16,7 +16,7 @@ scene = bpy.context.scene
 # CONFIGURACIÓN
 # --------------------------------------------------
 # Modifica esta ruta para que apunte a la carpeta donde quieres guardar los frames
-output_folder = "C:\\TU_RUTA\\proyectoVideo"   
+output_folder = "./Video"   
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 output_folder = f"{output_folder}/escena1_{timestamp}/"
@@ -139,4 +139,4 @@ scene.render.filepath = output_folder
 scene.render.image_settings.file_format = 'PNG'
 
 # Descomentar para renderizar la animacion al ejecutar
-# bpy.ops.render.render(animation=True)
+bpy.ops.render.render(animation=True)
