@@ -1,124 +1,138 @@
-% Script principal: main.m calibrado para tu ruta
-% 1. Definir la ruta base absoluta
-ruta_base = 'C:\Users\alvar\OneDrive\Escritorio\VideoImagen\proyectoVideo';
+% =====================================================================
+% ESCENA1MAT.m  –  Procesamiento robusto de la Escena 1 (objetos blancos)
+%
+% Técnica: Sustracción de fondo + Tracking espacial
+% Entrada : proyectoVideo/Escena 1/escena1_1/  (3 secuencias)
+% Salida  : proyectoVideo/Escena 1/escena1_1_salida/  + video MP4
+% =====================================================================
+clear; clc; close all;
 
-% 2. Definir la carpeta de entrada (dentro de la ruta base)
-nombre_escena = 'escena2_1'; 
-carpeta_entrada = fullfile(ruta_base, nombre_escena);
-carpeta_salida = fullfile(ruta_base, [nombre_escena, '_salida']);
+ruta_base  = 'C:\Users\crist\VideoImagen\proyectoVideo\Escena 1';
+secuencias = {'escena1_1', 'escena1_2', 'escena1_3'};
 
-% Crear la carpeta de salida si no existe
-if ~exist(carpeta_salida, 'dir')
-    mkdir(carpeta_salida);
-end
+for s = 1:length(secuencias)
+    nombre_escena   = secuencias{s};
+    carpeta_entrada = fullfile(ruta_base, nombre_escena);
+    carpeta_salida  = fullfile(ruta_base, [nombre_escena, '_salida']);
 
-% 3. Leer todos los archivos PNG de la carpeta de entrada
-archivos = dir(fullfile(carpeta_entrada, '*.png'));
+    fprintf('\n=== Procesando %s ===\n', nombre_escena);
 
-if isempty(archivos)
-    error('No se han encontrado fotos en: %s. Revisa que el nombre de la carpeta coincide.', carpeta_entrada);
-end
+    if ~exist(carpeta_salida, 'dir'), mkdir(carpeta_salida); end
 
-% (Todo lo de arriba se queda igual: definir rutas, leer archivos...)
-
-% (Todo lo de arriba se queda igual: definir rutas, leer archivos...)
-
-fprintf('Procesando %d fotogramas...\n', length(archivos));
-
-% Variable para guardar la memoria del fotograma anterior (TRACKING)
-objetos_memoria = []; 
-
-for f = 1:length(archivos)
-    nombre_archivo = archivos(f).name;
-    ruta_completa = fullfile(carpeta_entrada, nombre_archivo);
-    
-    imagenO = imread(ruta_completa);
-    imagenD = preprocesar_imagen(imagenO); % USA TU VERSIÓN HÍBRIDA QUE FUNCIONABA BIEN
-    
-    stats = regionprops(imagenD, 'Area', 'Perimeter', 'Centroid', 'BoundingBox', 'EulerNumber', 'Extent', 'Solidity');
-    
-    f_fig = figure('Visible', 'off'); 
-    imshow(imagenO);
-    hold on;
-    
-    % Array temporal para guardar los objetos de este frame
-    objetos_actuales = []; 
-    
-    for i = 1:length(stats)
-        area = stats(i).Area;
-        
-        if area > 150
-            centro = stats(i).Centroid;
-            caja = stats(i).BoundingBox;
-            perimetro = stats(i).Perimeter;
-            euler = stats(i).EulerNumber;
-            extent = stats(i).Extent;
-            solidez = stats(i).Solidity;
-            circularidad = (4 * pi * area) / (perimetro^2);
-            
-            % =========================================================
-            % LÓGICA DE CLASIFICACIÓN Y TRACKING
-            % =========================================================
-            
-            if f == 1
-                % FOTOGRAMA 1: La luz es buena, usamos tu árbol de decisión puro
-                if euler < 1
-                    forma = 'Toroide'; color_texto = 'magenta';
-                elseif solidez >= 0.94 && circularidad >= 0.80
-                    forma = 'Esfera/Cilindro'; color_texto = 'cyan';
-                elseif solidez >= 0.88 && circularidad >= 0.65
-                    forma = 'Cono'; color_texto = 'blue';
-                elseif solidez >= 0.80 && extent >= 0.58
-                    forma = 'Cubo/Prisma'; color_texto = 'green';
-                else
-                    forma = 'Mona/Compleja'; color_texto = 'yellow';
-                end
-            else
-                % FOTOGRAMA > 1: La luz deforma todo. Usamos TRACKING espacial.
-                % Buscamos cuál era el objeto más cercano en el frame anterior.
-                distancia_minima = inf;
-                indice_mejor = -1;
-                
-                for j = 1:length(objetos_memoria)
-                    % Distancia Euclídea entre centroides
-                    d = norm(centro - objetos_memoria(j).centro);
-                    if d < distancia_minima
-                        distancia_minima = d;
-                        indice_mejor = j;
-                    end
-                end
-                
-                % Heredamos la identidad del objeto del frame anterior
-                forma = objetos_memoria(indice_mejor).etiqueta;
-                color_texto = objetos_memoria(indice_mejor).color;
-            end
-            
-            % Guardamos los datos actuales para el SIGUIENTE fotograma
-            nuevo_obj.centro = centro;
-            nuevo_obj.etiqueta = forma;
-            nuevo_obj.color = color_texto;
-            objetos_actuales = [objetos_actuales; nuevo_obj];
-            
-            % =========================================================
-            
-            % Dibujamos
-            plot(centro(1), centro(2), 'r+', 'MarkerSize', 10, 'LineWidth', 2);
-            rectangle('Position', caja, 'EdgeColor', 'g', 'LineWidth', 2);
-            text(centro(1) + 5, centro(2) + 5, forma, 'Color', color_texto, 'FontSize', 10, 'FontWeight', 'bold');
-        end
+    archivos = dir(fullfile(carpeta_entrada, '*.png'));
+    if isempty(archivos)
+        warning('Sin imágenes en: %s', carpeta_entrada);
+        continue;
     end
-    
-    % Actualizamos la memoria para el próximo ciclo
-    objetos_memoria = objetos_actuales;
-    
-    hold off;
-    
-    % (Guardar la imagen y cerrar figure se queda igual...)
-    nombre_salida = strrep(nombre_archivo, '.png', '_salida.png');
-    ruta_salida = fullfile(carpeta_salida, nombre_salida);
-    saveas(f_fig, ruta_salida);
-    close(f_fig); 
-    
-    fprintf('Fotograma %d/%d guardado.\n', f, length(archivos));
+
+    fprintf('Encontrados %d fotogramas.\n', length(archivos));
+
+    % -------------------------------------------------------
+    % Cargar frame de referencia (fondo limpio = frame 1)
+    % -------------------------------------------------------
+    imagenFondo = imread(fullfile(carpeta_entrada, archivos(1).name));
+
+    objetos_memoria = [];
+
+    for f = 1:length(archivos)
+        nombre_archivo = archivos(f).name;
+        imagenO        = imread(fullfile(carpeta_entrada, nombre_archivo));
+
+        % Preprocesamiento con sustracción de fondo desde frame 2 en adelante
+        if f == 1
+            imagenD = preprocesar_imagen(imagenO);          % frame 1: sin fondo
+        else
+            imagenD = preprocesar_imagen(imagenO, imagenFondo); % resto: con fondo
+        end
+
+        stats = regionprops(imagenD, 'Area', 'Perimeter', 'Centroid', ...
+                            'BoundingBox', 'EulerNumber', 'Extent', 'Solidity');
+
+        fig = figure('Visible', 'off');
+        imshow(imagenO); hold on;
+        title(sprintf('%s  –  Frame %d/%d', nombre_escena, f, length(archivos)), ...
+              'FontSize', 11, 'FontWeight', 'bold');
+
+        objetos_actuales = [];
+
+        for i = 1:length(stats)
+            area = stats(i).Area;
+            if area < 300, continue; end
+
+            centro       = stats(i).Centroid;
+            caja         = stats(i).BoundingBox;
+            perimetro    = max(stats(i).Perimeter, 1);
+            euler        = stats(i).EulerNumber;
+            extent       = stats(i).Extent;
+            solidez      = stats(i).Solidity;
+            circularidad = (4 * pi * area) / (perimetro^2);
+
+            % --- Clasificación o Tracking ---
+            if f == 1 || isempty(objetos_memoria)
+                [forma, color_txt] = clasificar_forma(euler, solidez, circularidad, extent);
+            else
+                dists = arrayfun(@(o) norm(centro - o.centro), objetos_memoria);
+                [dmin, idx] = min(dists);
+                if dmin < 150
+                    forma     = objetos_memoria(idx).etiqueta;
+                    color_txt = objetos_memoria(idx).color;
+                else
+                    [forma, color_txt] = clasificar_forma(euler, solidez, circularidad, extent);
+                end
+            end
+
+            nuevo.centro   = centro;
+            nuevo.etiqueta = forma;
+            nuevo.color    = color_txt;
+            objetos_actuales = [objetos_actuales; nuevo]; %#ok<AGROW>
+
+            % Dibujar
+            plot(centro(1), centro(2), 'r+', 'MarkerSize', 12, 'LineWidth', 2);
+            rectangle('Position', caja, 'EdgeColor', 'g', 'LineWidth', 2);
+            text(centro(1)+4, centro(2)-12, forma, ...
+                 'Color', color_txt, 'FontSize', 9, 'FontWeight', 'bold', ...
+                 'BackgroundColor', 'k');
+            text(centro(1)+4, centro(2)+14, sprintf('A:%.0f C:%.2f', area, circularidad), ...
+                 'Color', 'white', 'FontSize', 7);
+        end
+
+        objetos_memoria = objetos_actuales;
+        hold off;
+
+        nombre_salida = strrep(nombre_archivo, '.png', '_salida.png');
+        saveas(fig, fullfile(carpeta_salida, nombre_salida));
+        close(fig);
+
+        fprintf('  Frame %02d: %d objetos detectados.\n', f, length(objetos_actuales));
+    end
+
+    % --- Generar vídeo ---
+    ruta_video = fullfile(ruta_base, [nombre_escena, '_resultado.mp4']);
+    generar_video(carpeta_salida, ruta_video);
 end
-disp('¡Proceso completado con éxito!');
+
+disp('=== ESCENA 1 COMPLETA ===');
+
+
+
+
+function generar_video(carpeta_salida, ruta_video)
+    archivos_sal = dir(fullfile(carpeta_salida, '*_salida.png'));
+    if isempty(archivos_sal)
+        warning('Sin imágenes de salida para el video.');
+        return;
+    end
+    try
+        v = VideoWriter(ruta_video, 'MPEG-4');
+        v.FrameRate = 1;
+        open(v);
+        for k = 1:length(archivos_sal)
+            img = imread(fullfile(carpeta_salida, archivos_sal(k).name));
+            writeVideo(v, img);
+        end
+        close(v);
+        fprintf('  Video: %s\n', ruta_video);
+    catch ME
+        warning('Error generando video: %s', ME.message);
+    end
+end
