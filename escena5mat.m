@@ -1,31 +1,34 @@
-% Script principal: main.m calibrado para tu ruta
-% 1. Definir la ruta base absoluta o relativa al proyecto
-ruta_base = fullfile(pwd, 'proyectoVideo');
+% escena5_texturas.m
+% Arquitectura: Varianza Local (stdfilt) + HSV + Tracking
 
-% 2. Definir la carpeta de entrada (dentro de la ruta base)
-nombre_escena = 'escena5_1'; 
+% =========================================================
+% 1. CONFIGURACIÓN DE RUTAS EXACTA
+% =========================================================
+ruta_base = 'C:\Users\crist\VideoImagen\proyectoVideo';
+nombre_escena = 'escena5_20260515_110156'; % Tu carpeta exacta
 carpeta_entrada = fullfile(ruta_base, nombre_escena);
 carpeta_salida = fullfile(ruta_base, [nombre_escena, '_salida']);
 
-% Crear la carpeta de salida si no existe
+% Crea la carpeta de salida automáticamente si no existe
 if ~exist(carpeta_salida, 'dir')
     mkdir(carpeta_salida);
 end
 
-% 3. Leer todos los archivos PNG de la carpeta de entrada
 archivos = dir(fullfile(carpeta_entrada, '*.png'));
 
 if isempty(archivos)
-    error('No se han encontrado fotos en: %s. Revisa que el nombre de la carpeta coincide.', carpeta_entrada);
+    error('No se han encontrado fotos en: %s', carpeta_entrada);
 end
 
-% (Todo lo de arriba se queda igual: definir rutas, leer archivos...)
+% Configurar video de salida
+ruta_video = fullfile(ruta_base, 'escena5_texturas_video.mp4');
+v = VideoWriter(ruta_video, 'MPEG-4');
+v.FrameRate = 12;
+open(v);
 
-% (Todo lo de arriba se queda igual: definir rutas, leer archivos...)
+fprintf('Procesando %d fotogramas de texturas procedimentales...\n', length(archivos));
 
-fprintf('Procesando %d fotogramas...\n', length(archivos));
-
-% Variable para guardar la memoria del fotograma anterior (TRACKING)
+% TRACKING: Memoria del fotograma anterior
 objetos_memoria = []; 
 
 for f = 1:length(archivos)
@@ -33,15 +36,41 @@ for f = 1:length(archivos)
     ruta_completa = fullfile(carpeta_entrada, nombre_archivo);
     
     imagenO = imread(ruta_completa);
-    imagenD = preprocesar_imagen(imagenO); % USA TU VERSIÓN HÍBRIDA QUE FUNCIONABA BIEN
     
-    stats = regionprops(imagenD, 'Area', 'Perimeter', 'Centroid', 'BoundingBox', 'EulerNumber', 'Extent', 'Solidity');
+    % =========================================================
+    % 2. PREPROCESADO: FUSIÓN DE VARIANZA Y SATURACIÓN
+    % =========================================================
+    % 2.1 Análisis Cromático (HSV)
+    I_hsv = rgb2hsv(imagenO);
+    Saturation = I_hsv(:,:,2); 
+    BW_color = Saturation > 0.20; % Captura parches de color vivo
     
-    f_fig = figure('Visible', 'off'); 
-    imshow(imagenO);
-    hold on;
+    % 2.2 Análisis de Textura / Varianza (stdfilt)
+    I_gray = im2double(rgb2gray(imagenO));
+    % stdfilt calcula la desviación estándar local para pillar el ajedrez/voronoi
+    I_tex = stdfilt(I_gray, ones(5)); 
+    BW_tex = I_tex > 0.025; 
     
-    % Array temporal para guardar los objetos de este frame
+    % 2.3 Fusión de Descriptores
+    BW_combined = BW_color | BW_tex;
+    
+    % 2.4 Refinamiento Morfológico
+    se_separar = strel('disk', 2);
+    BW_separada = imopen(BW_combined, se_separar); % Evita que se peguen objetos cercanos
+    
+    se_cerrar = strel('disk', 4);
+    BW_closed = imclose(BW_separada, se_cerrar); % Consolida la malla de la textura
+    
+    % Rellenamos todo el interior para obtener la silueta pura
+    imagenD = imfill(BW_closed, 'holes');
+    imagenD = bwareaopen(imagenD, 150); % Eliminamos ruido minúsculo del suelo
+
+    % =========================================================
+    % 3. EXTRACCIÓN DE CARACTERÍSTICAS DE SILUETA
+    % =========================================================
+    stats = regionprops(imagenD, 'Area', 'Perimeter', 'Centroid', 'BoundingBox', 'Extent', 'Solidity', 'Eccentricity');
+    
+    I_out = imagenO; % Copia para pintar
     objetos_actuales = []; 
     
     for i = 1:length(stats)
@@ -51,36 +80,31 @@ for f = 1:length(archivos)
             centro = stats(i).Centroid;
             caja = stats(i).BoundingBox;
             perimetro = stats(i).Perimeter;
-            euler = stats(i).EulerNumber;
             extent = stats(i).Extent;
             solidez = stats(i).Solidity;
-            circularidad = (4 * pi * area) / (perimetro^2);
+            excentricidad = stats(i).Eccentricity;
+
+            circularidad = 0;
+            if perimetro > 0, circularidad = (4 * pi * area) / (perimetro^2); end
             
             % =========================================================
-            % LÓGICA DE CLASIFICACIÓN Y TRACKING
+            % 4. CLASIFICACIÓN (Solo Silueta) Y TRACKING
             % =========================================================
-            
             if f == 1
-                % FOTOGRAMA 1: La luz es buena, usamos tu árbol de decisión puro
-                if euler < 1
-                    forma = 'Toroide'; color_texto = 'magenta';
-                elseif solidez >= 0.94 && circularidad >= 0.80
-                    forma = 'Esfera/Cilindro'; color_texto = 'cyan';
-                elseif solidez >= 0.88 && circularidad >= 0.65
-                    forma = 'Cono'; color_texto = 'blue';
-                elseif solidez >= 0.80 && extent >= 0.58
-                    forma = 'Cubo/Prisma'; color_texto = 'green';
+                % FOTOGRAMA 1: Clasificación basada estrictamente en la envolvente exterior
+                if circularidad > 0.85 && extent < 0.85 && excentricidad < 0.45
+                    forma = '3D Esfera'; color_texto = 'red';
+                elseif solidez > 0.85
+                    forma = '2D Simple'; color_texto = 'green';
                 else
-                    forma = 'Mona/Compleja'; color_texto = 'yellow';
+                    forma = '3D Complejo'; color_texto = 'magenta';
                 end
             else
-                % FOTOGRAMA > 1: La luz deforma todo. Usamos TRACKING espacial.
-                % Buscamos cuál era el objeto más cercano en el frame anterior.
+                % FOTOGRAMA > 1: Tracking Espacial Euclídeo
                 distancia_minima = inf;
                 indice_mejor = -1;
                 
                 for j = 1:length(objetos_memoria)
-                    % Distancia Euclídea entre centroides
                     d = norm(centro - objetos_memoria(j).centro);
                     if d < distancia_minima
                         distancia_minima = d;
@@ -88,57 +112,38 @@ for f = 1:length(archivos)
                     end
                 end
                 
-                % Heredamos la identidad del objeto del frame anterior
-                forma = objetos_memoria(indice_mejor).etiqueta;
-                color_texto = objetos_memoria(indice_mejor).color;
+                % Límite de seguridad
+                if distancia_minima < 150 && indice_mejor ~= -1
+                    forma = objetos_memoria(indice_mejor).etiqueta;
+                    color_texto = objetos_memoria(indice_mejor).color;
+                else
+                    forma = 'Desconocido'; color_texto = 'white';
+                end
             end
             
-            % Guardamos los datos actuales para el SIGUIENTE fotograma
+            % ---------------------------------------------------------
+            % 5. GUARDADO DE MEMORIA Y PINTADO
+            % ---------------------------------------------------------
             nuevo_obj.centro = centro;
             nuevo_obj.etiqueta = forma;
             nuevo_obj.color = color_texto;
             objetos_actuales = [objetos_actuales; nuevo_obj];
             
-            % =========================================================
-            
-            % Dibujamos
-            plot(centro(1), centro(2), 'r+', 'MarkerSize', 10, 'LineWidth', 2);
-            rectangle('Position', caja, 'EdgeColor', 'g', 'LineWidth', 2);
-            text(centro(1) + 5, centro(2) + 5, forma, 'Color', color_texto, 'FontSize', 10, 'FontWeight', 'bold');
+            I_out = insertShape(I_out, 'Rectangle', caja, 'Color', color_texto, 'LineWidth', 2);
+            I_out = insertText(I_out, [centro(1)-20, centro(2)-20], forma, 'BoxOpacity', 0.8, 'TextColor', 'white', 'BoxColor', color_texto);
+            I_out = insertMarker(I_out, centro, '+', 'Color', 'white', 'Size', 10);
         end
     end
     
-    % Actualizamos la memoria para el próximo ciclo
     objetos_memoria = objetos_actuales;
     
-    hold off;
-    
-    % (Guardar la imagen y cerrar figure se queda igual...)
+    writeVideo(v, I_out);
     nombre_salida = strrep(nombre_archivo, '.png', '_salida.png');
-    ruta_salida = fullfile(carpeta_salida, nombre_salida);
-    saveas(f_fig, ruta_salida);
-    close(f_fig); 
+    imwrite(I_out, fullfile(carpeta_salida, nombre_salida));
     
-    fprintf('Fotograma %d/%d guardado.\n', f, length(archivos));
+    fprintf('Fotograma %d/%d procesado.\n', f, length(archivos));
 end
 
-% =========================================================
-% GENERACIÓN DE VÍDEO
-% =========================================================
-nombre_video = fullfile(ruta_base, [nombre_escena, '_resultado.mp4']);
-v = VideoWriter(nombre_video, 'MPEG-4');
-v.FrameRate = 1; % 1 fps
-open(v);
-
-for f = 1:length(archivos)
-    nombre_salida = strrep(archivos(f).name, '.png', '_salida.png');
-    ruta_img = fullfile(carpeta_salida, nombre_salida);
-    if exist(ruta_img, 'file')
-        img = imread(ruta_img);
-        writeVideo(v, img);
-    end
-end
 close(v);
-disp(['Vídeo guardado en: ', nombre_video]);
-
-disp('¡Proceso completado con éxito!');
+disp(['¡Victoria! Escena 5 procesada.']);
+disp(['Revisa tu video en: ', ruta_video]);
