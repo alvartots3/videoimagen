@@ -1,31 +1,30 @@
-% Script principal: main.m calibrado para tu ruta
-% 1. Definir la ruta base absoluta o relativa al proyecto
-ruta_base = fullfile(pwd, 'proyectoVideo');
+% escena4_tracking.m
+% Arquitectura: Segmentación HSV + Tracking Temporal + Topología (Euler)
 
-% 2. Definir la carpeta de entrada (dentro de la ruta base)
-nombre_escena = 'escena4_1'; 
+% 1. Configuración de rutas exacta
+ruta_base = 'C:\Users\crist\VideoImagen\proyectoVideo';
+nombre_escena = 'escena4_20260515_103853'; 
 carpeta_entrada = fullfile(ruta_base, nombre_escena);
 carpeta_salida = fullfile(ruta_base, [nombre_escena, '_salida']);
 
-% Crear la carpeta de salida si no existe
 if ~exist(carpeta_salida, 'dir')
     mkdir(carpeta_salida);
 end
 
-% 3. Leer todos los archivos PNG de la carpeta de entrada
 archivos = dir(fullfile(carpeta_entrada, '*.png'));
 
 if isempty(archivos)
-    error('No se han encontrado fotos en: %s. Revisa que el nombre de la carpeta coincide.', carpeta_entrada);
+    error('No se han encontrado fotos en: %s', carpeta_entrada);
 end
 
-% (Todo lo de arriba se queda igual: definir rutas, leer archivos...)
+% Configurar video de salida
+v = VideoWriter(fullfile(ruta_base, 'escena4_tracking_video.mp4'), 'MPEG-4');
+v.FrameRate = 12;
+open(v);
 
-% (Todo lo de arriba se queda igual: definir rutas, leer archivos...)
+fprintf('Procesando %d fotogramas con Tracking...\n', length(archivos));
 
-fprintf('Procesando %d fotogramas...\n', length(archivos));
-
-% Variable para guardar la memoria del fotograma anterior (TRACKING)
+% TRACKING: Memoria del fotograma anterior
 objetos_memoria = []; 
 
 for f = 1:length(archivos)
@@ -33,16 +32,37 @@ for f = 1:length(archivos)
     ruta_completa = fullfile(carpeta_entrada, nombre_archivo);
     
     imagenO = imread(ruta_completa);
-    imagenD = preprocesar_imagen(imagenO); % USA TU VERSIÓN HÍBRIDA QUE FUNCIONABA BIEN
     
-    stats = regionprops(imagenD, 'Area', 'Perimeter', 'Centroid', 'BoundingBox', 'EulerNumber', 'Extent', 'Solidity');
+    % =========================================================
+    % 1. PREPROCESADO: SEGMENTACIÓN CROMÁTICA HSV MEJORADA
+    % =========================================================
+    I_hsv = rgb2hsv(imagenO);
+    Saturation = I_hsv(:,:,2); 
     
-    f_fig = figure('Visible', 'off'); 
-    imshow(imagenO);
-    hold on;
+    % Binarizamos por saturación (elimina suelo blanco y sombras)
+    BW_color = Saturation > 0.25;
     
-    % Array temporal para guardar los objetos de este frame
-    objetos_actuales = []; 
+    % 1.1 CORTAR PUENTES (Apertura Morfológica)
+    % Separa físicamente los objetos que están casi tocándose 
+    se_separar = strel('disk', 3);
+    BW_separada = imopen(BW_color, se_separar);
+    
+    % 1.2 CONSOLIDAR CUERPOS (Cierre Morfológico Suave)
+    % Tapa los pequeños brillos especulares
+    se_cerrar = strel('disk', 2);
+    BW_closed = imclose(BW_separada, se_cerrar);
+    
+    % 1.3 RELLENO Y LIMPIEZA
+    imagenD = imfill(BW_closed, 'holes');
+    imagenD = bwareaopen(imagenD, 150); % Máscara final limpia
+
+    % =========================================================
+    % 2. EXTRACCIÓN DE CARACTERÍSTICAS
+    % =========================================================
+    stats = regionprops(imagenD, 'Area', 'Perimeter', 'Centroid', 'BoundingBox', 'Extent', 'Solidity', 'Eccentricity', 'PixelIdxList');
+    
+    I_out = imagenO; % Copia para pintar encima
+    objetos_actuales = []; % Reseteamos la memoria del frame actual
     
     for i = 1:length(stats)
         area = stats(i).Area;
@@ -51,36 +71,46 @@ for f = 1:length(archivos)
             centro = stats(i).Centroid;
             caja = stats(i).BoundingBox;
             perimetro = stats(i).Perimeter;
-            euler = stats(i).EulerNumber;
             extent = stats(i).Extent;
             solidez = stats(i).Solidity;
-            circularidad = (4 * pi * area) / (perimetro^2);
+            excentricidad = stats(i).Eccentricity; % CLAVE para diferenciar esfera de cilindro
+            
+            % ---------------------------------------------------------
+            % RECUPERACIÓN TOPOLÓGICA (Salvar al Toroide)
+            % ---------------------------------------------------------
+            % Aislamos la masa sólida del objeto
+            obj_mask_solid = false(size(imagenD));
+            obj_mask_solid(stats(i).PixelIdxList) = true;
+            
+            % Cruzamos con la imagen ANTES de aplicar imfill
+            obj_mask_hollow = obj_mask_solid & BW_closed; 
+            
+            % Calculamos el Euler directo
+            euler_val = bweuler(obj_mask_hollow); 
+
+            circularidad = 0;
+            if perimetro > 0, circularidad = (4 * pi * area) / (perimetro^2); end
             
             % =========================================================
-            % LÓGICA DE CLASIFICACIÓN Y TRACKING
+            % 3. LÓGICA DE CLASIFICACIÓN ESTRICTA Y TRACKING
             % =========================================================
-            
             if f == 1
-                % FOTOGRAMA 1: La luz es buena, usamos tu árbol de decisión puro
-                if euler < 1
-                    forma = 'Toroide'; color_texto = 'magenta';
-                elseif solidez >= 0.94 && circularidad >= 0.80
-                    forma = 'Esfera/Cilindro'; color_texto = 'cyan';
-                elseif solidez >= 0.88 && circularidad >= 0.65
-                    forma = 'Cono'; color_texto = 'blue';
-                elseif solidez >= 0.80 && extent >= 0.58
-                    forma = 'Cubo/Prisma'; color_texto = 'green';
+                % FOTOGRAMA 1: Clasificación geométrica blindada
+                if euler_val < 1
+                    forma = '3D Toroide'; color_texto = 'magenta';
+                elseif circularidad > 0.88 && excentricidad < 0.45
+                    forma = '3D Esfera'; color_texto = 'red';
+                elseif solidez > 0.80
+                    forma = '2D Cilindro/Cubo'; color_texto = 'green';
                 else
-                    forma = 'Mona/Compleja'; color_texto = 'yellow';
+                    forma = '3D Mono'; color_texto = 'yellow';
                 end
             else
-                % FOTOGRAMA > 1: La luz deforma todo. Usamos TRACKING espacial.
-                % Buscamos cuál era el objeto más cercano en el frame anterior.
+                % FOTOGRAMA > 1: Tracking por distancia mínima
                 distancia_minima = inf;
                 indice_mejor = -1;
                 
                 for j = 1:length(objetos_memoria)
-                    % Distancia Euclídea entre centroides
                     d = norm(centro - objetos_memoria(j).centro);
                     if d < distancia_minima
                         distancia_minima = d;
@@ -88,57 +118,42 @@ for f = 1:length(archivos)
                     end
                 end
                 
-                % Heredamos la identidad del objeto del frame anterior
-                forma = objetos_memoria(indice_mejor).etiqueta;
-                color_texto = objetos_memoria(indice_mejor).color;
+                % Límite de seguridad espacial
+                if distancia_minima < 150 && indice_mejor ~= -1
+                    forma = objetos_memoria(indice_mejor).etiqueta;
+                    color_texto = objetos_memoria(indice_mejor).color;
+                else
+                    forma = 'Desconocido'; color_texto = 'white';
+                end
             end
             
-            % Guardamos los datos actuales para el SIGUIENTE fotograma
+            % ---------------------------------------------------------
+            % 4. GUARDADO DE MEMORIA Y PINTADO
+            % ---------------------------------------------------------
             nuevo_obj.centro = centro;
             nuevo_obj.etiqueta = forma;
             nuevo_obj.color = color_texto;
             objetos_actuales = [objetos_actuales; nuevo_obj];
             
-            % =========================================================
-            
-            % Dibujamos
-            plot(centro(1), centro(2), 'r+', 'MarkerSize', 10, 'LineWidth', 2);
-            rectangle('Position', caja, 'EdgeColor', 'g', 'LineWidth', 2);
-            text(centro(1) + 5, centro(2) + 5, forma, 'Color', color_texto, 'FontSize', 10, 'FontWeight', 'bold');
+            % Dibujamos anotaciones
+            I_out = insertShape(I_out, 'Rectangle', caja, 'Color', color_texto, 'LineWidth', 2);
+            I_out = insertText(I_out, [centro(1)-20, centro(2)-20], forma, 'BoxOpacity', 0.8, 'TextColor', 'white', 'BoxColor', color_texto);
+            I_out = insertMarker(I_out, centro, '+', 'Color', 'white', 'Size', 10);
         end
     end
     
-    % Actualizamos la memoria para el próximo ciclo
+    % Actualizamos la memoria global para el próximo fotograma
     objetos_memoria = objetos_actuales;
     
-    hold off;
+    % Escribir frame en el video global
+    writeVideo(v, I_out);
     
-    % (Guardar la imagen y cerrar figure se queda igual...)
+    % Guardar PNG individual en la carpeta de salida
     nombre_salida = strrep(nombre_archivo, '.png', '_salida.png');
-    ruta_salida = fullfile(carpeta_salida, nombre_salida);
-    saveas(f_fig, ruta_salida);
-    close(f_fig); 
+    imwrite(I_out, fullfile(carpeta_salida, nombre_salida));
     
-    fprintf('Fotograma %d/%d guardado.\n', f, length(archivos));
+    fprintf('Fotograma %d/%d procesado.\n', f, length(archivos));
 end
 
-% =========================================================
-% GENERACIÓN DE VÍDEO
-% =========================================================
-nombre_video = fullfile(ruta_base, [nombre_escena, '_resultado.mp4']);
-v = VideoWriter(nombre_video, 'MPEG-4');
-v.FrameRate = 1; % 1 fps
-open(v);
-
-for f = 1:length(archivos)
-    nombre_salida = strrep(archivos(f).name, '.png', '_salida.png');
-    ruta_img = fullfile(carpeta_salida, nombre_salida);
-    if exist(ruta_img, 'file')
-        img = imread(ruta_img);
-        writeVideo(v, img);
-    end
-end
 close(v);
-disp(['Vídeo guardado en: ', nombre_video]);
-
-disp('¡Proceso completado con éxito!');
+disp('¡Proceso de Tracking Completado! Revisa la carpeta de salida y el MP4.');
