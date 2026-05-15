@@ -1,60 +1,56 @@
 function imagenD = preprocesar_imagen(imagenO, imagenFondo)
-% PREPROCESAR_IMAGEN - Binarización general con compensación de iluminación
-% 
-% Maneja tanto Escena 1 (iluminación estática, objetos móviles) como
-% Escena 2 (luz móvil con sombras extremas, objetos estáticos).
+% PREPROCESAR_IMAGEN - Binarización bidireccional con compensación de iluminación
 %
-% Técnica: Estimación de la iluminación de baja frecuencia y compensación
-% aditiva. Funciona asumiendo que los cambios de iluminación son suaves
-% en el espacio.
+% Detecta objetos MÁS OSCUROS y MÁS CLAROS que el fondo (clave para Escena 2,
+% donde los toroides son blancos y los cubos son grises oscuros sobre
+% un fondo gris medio).
+%
+% Sin fondo  : umbral bidireccional directo sobre frame 1
+% Con fondo  : compensación de sombra + umbral bidireccional
 
     I_gris = rgb2gray(imagenO);
+    I_med  = medfilt2(I_gris, [5 5]);
 
     if nargin > 1 && ~isempty(imagenFondo)
+        % ---- Modo con fondo de referencia (frames 2-N, luz móvil) ----
         I_fondo_gris = rgb2gray(imagenFondo);
-        
-        % Estimación de iluminación (Low-pass filter espacial muy grande)
-        % Difumina los objetos y extrae el gradiente de luz/sombra.
-        filtro_gauss = fspecial('gaussian', [200 200], 60);
-        
-        I_suavizada = imfilter(double(I_gris), filtro_gauss, 'replicate');
-        I_fondo_suavizada = imfilter(double(I_fondo_gris), filtro_gauss, 'replicate');
-        
-        % Calculamos cuánto se ha oscurecido la imagen actual respecto al fondo
-        % debido al paso de la sombra.
-        diff_sombra = I_fondo_suavizada - I_suavizada;
-        
-        % Solo compensamos donde hay oscurecimiento (sombra)
-        diff_sombra = max(diff_sombra, 0);
-        
-        % Compensación aditiva: sumamos la pérdida de luz a la imagen original
-        % Esto "apaga" el efecto de la sombra, devolviendo la imagen a una
-        % iluminación globalmente uniforme.
-        I_compensada = uint8(min(double(I_gris) + diff_sombra, 255));
-        I_compensada = medfilt2(I_compensada, [5 5]);
+        I_fondo_med  = medfilt2(I_fondo_gris, [5 5]);
+
+        % Estimación del gradiente de sombra (filtro Gaussiano de baja frecuencia)
+        filtro = fspecial('gaussian', [101 101], 30);
+        I_suav       = imfilter(double(I_med),       filtro, 'replicate');
+        I_fondo_suav = imfilter(double(I_fondo_med), filtro, 'replicate');
+
+        % Compensación aditiva de la sombra
+        diff_somb = max(I_fondo_suav - I_suav, 0);
+        I_comp    = uint8(min(double(I_med) + diff_somb, 255));
+
+        % Nivel de fondo de referencia (mediana del frame 1)
+        bg = double(median(I_fondo_med(:)));
+
+        % Umbral bidireccional: objetos oscuros Y objetos claros
+        dark_mask  = I_comp < uint8(bg * 0.82);
+        light_mask = I_comp > uint8(min(bg * 1.07, 255));
+        I_bin = dark_mask | light_mask;
+
     else
-        % Si no hay imagen de referencia, asumimos iluminación original
-        I_compensada = medfilt2(I_gris, [5 5]);
+        % ---- Modo sin fondo (frame 1 de escena2, escena1, etc.) ----
+        bg = double(median(I_med(:)));
+
+        dark_mask  = I_med < uint8(bg * 0.82);
+        light_mask = I_med > uint8(min(bg * 1.07, 255));
+        I_bin = dark_mask | light_mask;
     end
 
-    % Una vez compensada la iluminación, una umbralización global de Otsu
-    % es suficiente para separar los objetos oscuros del fondo claro.
-    umbral = graythresh(I_compensada);
-    
-    % Binarizamos e invertimos (queremos objetos blancos sobre fondo negro)
-    I_bin = ~imbinarize(I_compensada, umbral);
-    
-    % Post-procesamiento morfológico estándar
-    % 1. En lugar de rellenar todos los huecos (lo que destruiría los toroides),
-    % solo rellenamos huecos pequeños de ruido (menores a 100 píxeles).
-    I_bin_inv = ~I_bin;
-    I_bin_inv = bwareaopen(I_bin_inv, 100);
-    I_rellena = ~I_bin_inv;
-    
-    % 2. Cierre para suavizar bordes y unir piezas fragmentadas
-    ee_cierre = strel('disk', 5);
-    I_cerrada = imclose(I_rellena, ee_cierre);
-    
-    % 3. Apertura/Eliminación de ruido (artefactos pequeños o bordes de sombra residuales)
-    imagenD = bwareaopen(I_cerrada, 400);
+    % ---- Morfología: preservar huecos de toroides ----
+    % Solo eliminar huecos MUY pequeños (ruido), conservar los grandes (toroides)
+    inv       = ~I_bin;
+    inv_clean = bwareaopen(inv, 150);   % elimina huecos de ruido < 150 px
+    I_rellena = ~inv_clean;
+
+    % Cierre suave para unir bordes fragmentados
+    I_cerrada = imclose(I_rellena, strel('disk', 4));
+
+    % Eliminar regiones muy pequeñas (ruido global)
+    imagenD = bwareaopen(I_cerrada, 350);
 end

@@ -3,9 +3,10 @@
 ruta_base = fullfile(pwd, 'proyectoVideo');
 
 % 2. Definir la carpeta de entrada (dentro de la ruta base)
-nombre_escena = 'escena3_1'; 
-carpeta_entrada = fullfile(ruta_base, nombre_escena);
-carpeta_salida = fullfile(ruta_base, [nombre_escena, '_salida']);
+nombre_escena = 'escena3';
+subcarpeta = 'escena3_20260514_005929';
+carpeta_entrada = fullfile(ruta_base, nombre_escena, subcarpeta);
+carpeta_salida = fullfile(ruta_base, nombre_escena, [subcarpeta, '_salida']);
 
 % Crear la carpeta de salida si no existe
 if ~exist(carpeta_salida, 'dir')

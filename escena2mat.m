@@ -53,20 +53,34 @@ for f = 1:length(archivos)
     end
 
     if f == 1
-        % Pre-computamos las detecciones estáticas usando el frame 5, donde
-        % la sombra está completamente formada (las sombras en el frame 1 están
-        % fragmentadas y rompen la forma de los toroides).
+        % Pre-computamos las detecciones estáticas usando el frame 5
         frame_ref_idx = min(5, length(archivos));
         imagen_ref = imread(fullfile(carpeta_entrada, archivos(frame_ref_idx).name));
         imagenD_ref = preprocesar_imagen(imagen_ref, imagenFondo);
         stats_memoria = regionprops(imagenD_ref, 'Area', 'Perimeter', 'Centroid', ...
                             'BoundingBox', 'EulerNumber', 'Extent', 'Solidity');
-        stats = stats_memoria;
-    else
-        % Como sabemos que en la Escena 2 los objetos son ESTÁTICOS,
-        % congelamos las detecciones.
-        stats = stats_memoria;
+        
+        % Inicializar memoria de características históricas para cada objeto estático
+        for i = 1:length(stats_memoria)
+            stats_memoria(i).best_euler   = stats_memoria(i).EulerNumber;
+            stats_memoria(i).best_solidez = stats_memoria(i).Solidity;
+            stats_memoria(i).best_circ    = (4 * pi * stats_memoria(i).Area) / (max(stats_memoria(i).Perimeter, 1)^2);
+            stats_memoria(i).best_extent  = stats_memoria(i).Extent;
+            [forma, color_txt] = clasificar_forma(stats_memoria(i).best_euler, ...
+                                                  stats_memoria(i).best_solidez, ...
+                                                  stats_memoria(i).best_circ, ...
+                                                  stats_memoria(i).best_extent);
+            stats_memoria(i).etiqueta = forma;
+            stats_memoria(i).color    = color_txt;
+        end
     end
+
+    % Las cajas (BoundingBox) y centros son 100% estáticos de frame 5
+    stats = stats_memoria;
+
+    % Pero extraemos las stats del frame actual para mejorar nuestra clasificación histórica
+    stats_actuales = regionprops(imagenD, 'Area', 'Perimeter', 'Centroid', ...
+                                 'BoundingBox', 'EulerNumber', 'Extent', 'Solidity');
 
     fig = figure('Visible', 'off');
     imshow(imagenO); hold on;
@@ -81,43 +95,64 @@ for f = 1:length(archivos)
     objetos_actuales = [];
 
     for i = 1:length(stats)
-        area = stats(i).Area;
-        if area < 300, continue; end
+        area_congelada = stats(i).Area;
+        if area_congelada < 300, continue; end
 
-        centro       = stats(i).Centroid;
-        caja         = stats(i).BoundingBox;
-        perimetro    = max(stats(i).Perimeter, 1);
-        euler        = stats(i).EulerNumber;
-        extent       = stats(i).Extent;
-        solidez      = stats(i).Solidity;
-        circularidad = (4 * pi * area) / (perimetro^2);
+        centro_congelado = stats(i).Centroid;
+        caja_congelada   = stats(i).BoundingBox;
 
-        % --- Clasificación o Tracking ---
-        if f == 1 || isempty(objetos_memoria)
-            [forma, color_txt] = clasificar_forma(euler, solidez, circularidad, extent);
-        else
-            dists = arrayfun(@(o) norm(centro - o.centro), objetos_memoria);
-            [dmin, idx] = min(dists);
-            if dmin < 150
-                forma     = objetos_memoria(idx).etiqueta;
-                color_txt = objetos_memoria(idx).color;
-            else
-                [forma, color_txt] = clasificar_forma(euler, solidez, circularidad, extent);
+        % --- Búsqueda de características dinámicas en el frame actual ---
+        % Buscamos si en este frame detectamos algo cerca del centroide estático
+        if ~isempty(stats_actuales)
+            dists = arrayfun(@(s) norm(centro_congelado - s.Centroid), stats_actuales);
+            [dmin, idx_actual] = min(dists);
+            
+            if dmin < 100
+                % Si encontramos el objeto en el frame actual, comprobamos si revela una mejor forma
+                obj_actual = stats_actuales(idx_actual);
+                circ_actual = (4 * pi * obj_actual.Area) / (max(obj_actual.Perimeter, 1)^2);
+                
+                % Un toroide eventualmente revelará su hueco (Euler < 1)
+                if obj_actual.EulerNumber < stats_memoria(i).best_euler
+                    stats_memoria(i).best_euler = obj_actual.EulerNumber;
+                end
+                
+                % Formas sin hueco se ven mejor cuando no están fragmentadas por la sombra
+                if obj_actual.Solidity > stats_memoria(i).best_solidez
+                    stats_memoria(i).best_solidez = obj_actual.Solidity;
+                    stats_memoria(i).best_circ    = circ_actual;
+                    stats_memoria(i).best_extent  = obj_actual.Extent;
+                end
+                
+                % Reclasificar con las mejores características históricas
+                [forma, color_txt] = clasificar_forma(stats_memoria(i).best_euler, ...
+                                                      stats_memoria(i).best_solidez, ...
+                                                      stats_memoria(i).best_circ, ...
+                                                      stats_memoria(i).best_extent);
+                stats_memoria(i).etiqueta = forma;
+                stats_memoria(i).color    = color_txt;
             end
         end
 
-        nuevo.centro   = centro;
+        % Usamos la etiqueta históricamente acumulada, pero la caja estática
+        forma     = stats_memoria(i).etiqueta;
+        color_txt = stats_memoria(i).color;
+
+        nuevo.centro   = centro_congelado;
         nuevo.etiqueta = forma;
         nuevo.color    = color_txt;
         objetos_actuales = [objetos_actuales; nuevo]; %#ok<AGROW>
 
-        % Dibujar anotaciones
-        plot(centro(1), centro(2), 'r+', 'MarkerSize', 12, 'LineWidth', 2);
-        rectangle('Position', caja, 'EdgeColor', 'g', 'LineWidth', 2);
-        text(centro(1)+4, centro(2)-12, forma, ...
+        % Dibujar anotaciones usando las coordenadas estáticas!
+        plot(centro_congelado(1), centro_congelado(2), 'r+', 'MarkerSize', 12, 'LineWidth', 2);
+        rectangle('Position', caja_congelada, 'EdgeColor', 'g', 'LineWidth', 2);
+        text(centro_congelado(1)+4, centro_congelado(2)-12, forma, ...
              'Color', color_txt, 'FontSize', 9, 'FontWeight', 'bold', ...
              'BackgroundColor', 'k');
-        text(centro(1)+4, centro(2)+14, sprintf('A:%.0f C:%.2f', area, circularidad), ...
+        
+        % Mostrar las mejores características logradas hasta ahora
+        text(centro_congelado(1)+4, centro_congelado(2)+14, ...
+             sprintf('A:%.0f C:%.2f E:%d', area_congelada, stats_memoria(i).best_circ, stats_memoria(i).best_euler), ...
              'Color', 'white', 'FontSize', 7);
     end
 
